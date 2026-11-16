@@ -100,6 +100,9 @@ def _fresh_google_access_token(credential: Credential, config: dict[str, Any]) -
 
 async def credential_context_value(credential: Credential, config: dict[str, Any]) -> str | None:
     """Return the value `$credentials.<name>` resolves to, or None to leave it out."""
+    if credential.type == CredentialType.plugin:
+        # Several named values; a plugin node gets them through its `credential` field.
+        return None
     if credential.type == CredentialType.bearer:
         token = config.get("bearer_token", "")
         return f"Bearer {token}" if token else ""

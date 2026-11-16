@@ -8,10 +8,12 @@ API 1 handlers keep the plain dict ``{"node_id", "node_label"}`` and the shallow
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Iterator, Mapping
 from typing import Any
 
 from app.models.plugin_schemas import PluginField, PluginManifest, PluginNodeDef
+from app.services import plugin_credentials
 from app.services.node_execution.base import NodeExecutionContext
 
 logger = logging.getLogger("heym.plugins")
@@ -89,14 +91,20 @@ def shown(field: PluginField, values: Mapping[str, Any]) -> bool:
 
 
 def resolve_config(
-    exec_ctx: NodeExecutionContext, fields: list[PluginField], raw: Mapping[str, Any]
+    exec_ctx: NodeExecutionContext,
+    fields: list[PluginField],
+    raw: Mapping[str, Any],
+    plugin_id: str = "",
+    secrets: list[str] | None = None,
 ) -> dict:
     """The config an API 2 handler gets.
 
     A missing value takes its field's default; a field hidden by `showIf` is left out; `$` values are
     resolved, also inside list rows, keyValue values and json strings. A `condition` stays text, for
-    the handler to check with `ctx.check`. Keys the form doesn't define pass through as saved.
+    the handler to check with `ctx.check`. A `credential` becomes its decrypted values, and their
+    secrets are added to `secrets` for masking. Keys the form doesn't define pass through as saved.
     """
+    secrets = secrets if secrets is not None else []
     with_defaults = dict(raw)
     for field in fields:
         if field.key not in with_defaults and field.default is not None:
@@ -109,20 +117,67 @@ def resolve_config(
     for field in fields:
         if field.key not in with_defaults or not shown(field, with_defaults):
             continue
-        out[field.key] = _resolve_field(exec_ctx, field, with_defaults[field.key])
+        value = with_defaults[field.key]
+        out[field.key] = _resolve_field(exec_ctx, field, value, plugin_id, secrets)
     return out
 
 
-def _resolve_field(exec_ctx: NodeExecutionContext, field: PluginField, value: Any) -> Any:
+def _resolve_field(
+    exec_ctx: NodeExecutionContext,
+    field: PluginField,
+    value: Any,
+    plugin_id: str,
+    secrets: list[str],
+) -> Any:
     if field.type == "condition":
         return value
+    if field.type == "credential":
+        return _credential_values(exec_ctx, plugin_id, field, value, secrets)
     if field.type == "list":
         rows = value if isinstance(value, list) else []
         return [
-            resolve_config(exec_ctx, field.fields, row) if isinstance(row, Mapping) else row
+            resolve_config(exec_ctx, field.fields, row, plugin_id, secrets)
+            if isinstance(row, Mapping)
+            else row
             for row in rows
         ]
     return _resolve_value(exec_ctx, value)
+
+
+def _credential_values(
+    exec_ctx: NodeExecutionContext,
+    plugin_id: str,
+    field: PluginField,
+    credential_id: Any,
+    secrets: list[str],
+) -> dict | None:
+    if credential_id in (None, ""):
+        return None
+    config = load_credential_config(exec_ctx, credential_id)
+    if config is None:
+        raise ValueError(f"{field.label}: the chosen credential was not found")
+    values = plugin_credentials.values_for_run(
+        config, plugin_id, field.credential_type or "", field.label
+    )
+    secrets.extend(plugin_credentials.secret_values(config))
+    return values
+
+
+def load_credential_config(exec_ctx: NodeExecutionContext, credential_id: Any) -> dict | None:
+    """The decrypted config of a `plugin` credential the run's user may use, else None."""
+    from app.db.models import CredentialType
+    from app.db.session import SessionLocal
+    from app.services.encryption import decrypt_config
+
+    try:
+        credential_uuid = uuid.UUID(str(credential_id))
+    except ValueError:
+        return None
+    with SessionLocal() as db:
+        credential = exec_ctx.executor._get_accessible_credential(db, credential_uuid)
+        if credential is None or credential.type != CredentialType.plugin:
+            return None
+        return decrypt_config(credential.encrypted_config)
 
 
 def _resolve_value(exec_ctx: NodeExecutionContext, value: Any) -> Any:

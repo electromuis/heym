@@ -74,6 +74,8 @@ class CredentialType(str, PyEnum):
     rag = "rag"
     decision = "decision"
     model_router = "model_router"
+    # Plugin API 2: a type a plugin package declares (app/services/plugin_credentials.py).
+    plugin = "plugin"
 
 
 # Every credential that can serve a model request. `model_router` belongs here because

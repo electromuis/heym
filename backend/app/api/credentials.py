@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from urllib.parse import urlparse
 
@@ -40,6 +41,7 @@ from app.models.schemas import (
     TeamShareRequest,
     TeamShareResponse,
 )
+from app.services import plugin_credentials
 from app.services.audit_log import OUTCOME_DENIED, audit
 from app.services.codex_usage_service import fetch_codex_usage
 from app.services.credential_access import team_shared_credential_clause
@@ -70,6 +72,11 @@ def merge_credential_config_for_update(
     incoming_config: dict,
 ) -> dict:
     """Merge update payload into an existing credential config when needed."""
+    if credential_type == CredentialType.plugin:
+        try:
+            return plugin_credentials.merge_for_update(existing_config, incoming_config)
+        except plugin_credentials.PluginCredentialError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if credential_type == CredentialType.rag:
         # The dialog leaves secret inputs blank unless the user retypes them, so a
         # blank key means "keep the stored one" rather than "clear it".
@@ -398,6 +405,8 @@ def _jira_auth_mode(config: dict) -> str:
 
 
 def get_masked_value(credential_type: CredentialType, config: dict) -> str | None:
+    if credential_type == CredentialType.plugin:
+        return plugin_credentials.masked_value(config)
     if credential_type == CredentialType.codex:
         access_token = str(config.get("access_token", "")).strip()
         return mask_api_key(access_token) if access_token else None
@@ -605,6 +614,8 @@ def get_public_credential_fields(
     credential_type: CredentialType, config: dict
 ) -> dict[str, str | None]:
     """Return non-secret credential fields that the UI may safely hydrate for editing."""
+    if credential_type == CredentialType.plugin:
+        return plugin_credentials.public_fields(config)
     if credential_type == CredentialType.slack_bot:
         from app.services.hitl_service import build_default_public_base_url
 
@@ -1405,6 +1416,7 @@ async def run_credential_connection_test(
         CredentialType.sentry,
         CredentialType.rag,
         CredentialType.decision,
+        CredentialType.plugin,
     }:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1471,8 +1483,15 @@ async def run_credential_connection_test(
             config = {**stored_config, **{k: v for k, v in config.items() if v not in (None, "")}}
         elif test_data.type == CredentialType.decision:
             config = {**stored_config, **{k: v for k, v in config.items() if v not in (None, "")}}
+        elif test_data.type == CredentialType.plugin:
+            config = merge_credential_config_for_update(test_data.type, stored_config, config)
         else:
             config = _merge_notion_test_config(config, stored_config)
+
+    if test_data.type == CredentialType.plugin:
+        validate_credential_config(test_data.type, config)
+        success, message = await asyncio.to_thread(plugin_credentials.run_test, config)
+        return CredentialTestResponse(success=success, message=message)
 
     if test_data.type == CredentialType.decision:
         validate_credential_config(test_data.type, config)
@@ -2168,6 +2187,12 @@ def validate_credential_config(
     *,
     allow_pending_oauth: bool = False,
 ) -> None:
+    if credential_type == CredentialType.plugin:
+        try:
+            plugin_credentials.validate(config)
+        except plugin_credentials.PluginCredentialError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return
     if credential_type == CredentialType.openai:
         if "api_key" not in config or not config["api_key"]:
             raise HTTPException(

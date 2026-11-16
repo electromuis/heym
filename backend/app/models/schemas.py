@@ -702,6 +702,7 @@ class CredentialType(str, Enum):
     rag = "rag"
     decision = "decision"
     model_router = "model_router"
+    plugin = "plugin"
 
 
 class CredentialConfigOpenAI(BaseModel):

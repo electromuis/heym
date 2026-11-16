@@ -173,6 +173,9 @@ CREDENTIAL_TYPE_PURPOSE: dict[CredentialType, str] = {
     CredentialType.model_router: (
         "Picks one of the user's LLM credentials per request; LLM and Agent nodes"
     ),
+    CredentialType.plugin: (
+        "A credential type an installed plugin declares; that plugin's nodes with a credential field"
+    ),
 }
 
 # Suggested header key per HTTP-capable type; None when the credential carries its own

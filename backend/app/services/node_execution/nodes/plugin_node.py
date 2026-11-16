@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.models.plugin_schemas import PluginManifest, PluginNodeDef
-from app.services import plugin_context, plugin_loader, plugin_store
+from app.services import plugin_context, plugin_credentials, plugin_loader, plugin_store
 from app.services.node_execution.base import NodeExecutionContext
 
 
@@ -72,16 +72,24 @@ def _execute_api2(
 ) -> dict:
     """An API 2 action: full config resolution, the `ctx` object, named inputs and exits."""
     raw_config = ctx.node_data.get("config", {}) or {}
-    config = plugin_context.resolve_config(ctx, node_def.fields, raw_config)
+    secrets: list[str] = []
+    config = plugin_context.resolve_config(ctx, node_def.fields, raw_config, manifest.id, secrets)
     plugin_ctx = plugin_context.PluginContext(ctx, manifest, node_def)
-    result = plugin_loader.call_handler(
-        manifest.id,
-        plugin_store.plugins_root(),
-        node_def.function,
-        {"inputs": ctx.inputs, "config": config, "ctx": plugin_ctx},
-        optional_kwargs={"inputs_by_key": plugin_context.inputs_by_key(ctx, node_def)},
-    )
+    try:
+        result = plugin_loader.call_handler(
+            manifest.id,
+            plugin_store.plugins_root(),
+            node_def.function,
+            {"inputs": ctx.inputs, "config": config, "ctx": plugin_ctx},
+            optional_kwargs={"inputs_by_key": plugin_context.inputs_by_key(ctx, node_def)},
+        )
+    except plugin_loader.PluginRuntimeError as exc:
+        if not secrets:
+            raise
+        raise plugin_loader.PluginRuntimeError(
+            plugin_credentials.mask_text(str(exc), secrets)
+        ) from None
     output = result if isinstance(result, dict) else {"value": result}
     if node_def.has_exits():
         plugin_context.route_exit(ctx, node_def, config, output)
-    return output
+    return plugin_credentials.mask_output(output, secrets)
