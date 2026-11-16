@@ -7,8 +7,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,7 +26,7 @@ from app.models.plugin_schemas import (
     PluginSummary,
     walk_fields,
 )
-from app.services import plugin_credentials, plugin_loader, plugin_store
+from app.services import plugin_credentials, plugin_loader, plugin_store, plugin_triggers
 from app.services.encryption import decrypt_config
 from app.services.plugin_store import PluginInstallError
 
@@ -361,3 +361,52 @@ async def load_plugin_options(
     except (plugin_loader.PluginRuntimeError, ValueError) as exc:
         detail = plugin_credentials.mask_text(str(exc), secrets)
         raise HTTPException(status_code=422, detail=detail) from exc
+
+
+@router.post("/{plugin_id}/hooks/{hook_id}", response_model=None)
+async def receive_plugin_hook(
+    plugin_id: str,
+    hook_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """A push trigger's URL. No sign-in: the package's `receive` decides who may send."""
+    require_plugins_enabled()
+    found = await plugin_triggers.find_hook(db, plugin_id, hook_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    workflow, node, manifest, node_def = found
+    body = await request.body()
+    if len(body) > plugin_triggers.MAX_HOOK_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Request too large")
+    view = plugin_triggers.request_view(
+        request.method, dict(request.headers), request.query_params, body
+    )
+    ctx = plugin_triggers.TriggerContext(manifest.id, node_def, workflow.id, str(node.get("id")))
+
+    def receive() -> tuple[object, list[str]]:
+        config, secrets = plugin_triggers.trigger_config(
+            manifest, node_def, node, workflow.owner_id
+        )
+        try:
+            return plugin_triggers.call_receive(manifest, node_def, view, config, ctx), secrets
+        except plugin_loader.PluginRuntimeError as exc:
+            exc.secrets = secrets  # type: ignore[attr-defined]
+            raise
+
+    try:
+        result, _secrets = await asyncio.wait_for(
+            asyncio.to_thread(receive), timeout=plugin_triggers.RECEIVE_TIMEOUT_SECONDS
+        )
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="The plugin took too long") from exc
+    except plugin_loader.PluginRuntimeError as exc:
+        if isinstance(exc.__cause__, PermissionError):
+            raise HTTPException(status_code=401, detail="Not allowed") from exc
+        detail = plugin_credentials.mask_text(str(exc), getattr(exc, "secrets", []))
+        raise HTTPException(status_code=400, detail=detail) from exc
+    events = plugin_triggers.as_events(result)
+    started = plugin_triggers.start_runs_in_background(workflow.id, node, events)
+    if started == 0:
+        return Response(status_code=204)
+    return JSONResponse(status_code=202, content={"started": started})

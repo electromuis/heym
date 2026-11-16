@@ -16,6 +16,8 @@ INITIAL_INPUT_TRIGGER_TYPES = frozenset(
         "heymTrigger",
         "googleDriveTrigger",
         "googleSheetsTrigger",
+        # Plugin API 2: a plugin trigger with a `source` reads its event from here.
+        "pluginTrigger",
     }
 )
 

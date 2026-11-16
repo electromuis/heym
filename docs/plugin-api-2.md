@@ -229,7 +229,9 @@ def receive(request, config, ctx):
 
 - `receive` is required for a push trigger (`receive_<node key>` is used first when the package has several).
 - The workflow must be active and the trigger node enabled. A hook of a deleted or inactive workflow answers 404.
-- The answer is `202` with the ids of the runs started, `204` when no run started.
+- The answer is `202` with `{"started": <number of runs>}` once the runs are started (the sender doesn't wait for them), `204`
+  when no run started, `401` when `receive` raised `PermissionError`, `400` for another error, `413` above 1 MiB, `504` after
+  10 seconds.
 
 ### `source: "loop"`: a background listener
 
@@ -241,16 +243,18 @@ def listen(config, emit, ctx):
         emit(event)
 ```
 
-- One listener runs per active workflow with that trigger node, on one Heym instance (a lock, as the IMAP trigger does), in a thread.
-- It is started when the workflow is activated or saved, and stopped (`ctx.stopping` set) when it is deactivated, changed or deleted, or
-  when the plugin is disabled or uninstalled. A listener that returns or raises is started again after 5, 10, 20 ... up to 300 seconds;
+- One listener runs per active trigger node of that kind, on the leader instance (as the IMAP trigger polls), in a thread. A
+  node is active unless its `active` is false. Heym looks for new, changed and removed nodes every 15 seconds.
+- It is stopped (`ctx.stopping` set) when its node is deactivated, changed or deleted, when the package is disabled, uninstalled
+  or updated, or when plugins are turned off; a changed node gets a new listener. A listener that returns or raises is started again after 5, 10, 20 ... up to 300 seconds;
   the error is in the logs.
 - `emit(event)` starts one run with that event (subject to the filter).
 
 ### What every source shares
 
-- The event becomes the trigger node's output. When the package also has the trigger's `function`, it is called as
-  `trigger(config=..., ctx=..., event=...)` and its result is the output instead.
+- The event becomes the trigger node's output. When the manifest node names a `function`, it is called as
+  `function(config=..., ctx=..., event=...)` and its result is the output instead. (A trigger with a `source` has no default
+  function; one without keeps API 1's default `trigger`.)
 - Every trigger node with a `source` has a field "Only start when" (an expression over `$event`, e.g.
   `$event.channel == "general"`), checked before a run starts. False, or an error in it, starts no run; an error is logged.
 - A trigger with `exits` picks one with the event's `exit` key, as an action does.

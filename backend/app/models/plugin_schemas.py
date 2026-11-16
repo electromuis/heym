@@ -301,7 +301,9 @@ class PluginNodeDef(BaseModel):
 
     @model_validator(mode="after")
     def _default_function(self) -> PluginNodeDef:
-        if not self.function:
+        # A trigger with a `source` calls a function only when the manifest names one; its
+        # event is the output otherwise (docs/plugin-api-2.md, "Triggers").
+        if not self.function and self.source is None:
             self.function = "run" if self.kind == "action" else "trigger"
         return self
 

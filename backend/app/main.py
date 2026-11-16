@@ -122,6 +122,7 @@ from app.services.imap_trigger_service import imap_trigger_manager
 from app.services.k8s_credentials import lifecycle as k8s_credentials_lifecycle
 from app.services.key_rotation import key_rotation_service
 from app.services.notion_service import NotionService
+from app.services.plugin_triggers import plugin_trigger_listener_manager
 from app.services.qdrant_pool import close_all_clients as close_qdrant_clients
 from app.services.qdrant_pool import warm_up_pools as warm_up_qdrant_pools
 from app.services.rabbitmq_consumer import rabbitmq_consumer_manager
@@ -258,6 +259,7 @@ async def lifespan(app: FastAPI):
 
     await reconcile_orphaned_board_runs()
     await imap_trigger_manager.start()
+    await plugin_trigger_listener_manager.start()
     await google_trigger_poller.start()
     await gmail_trigger_manager.start()
     await rabbitmq_consumer_manager.start()
@@ -277,6 +279,7 @@ async def lifespan(app: FastAPI):
     await gmail_trigger_manager.stop()
     await google_trigger_poller.stop()
     await imap_trigger_manager.stop()
+    await plugin_trigger_listener_manager.stop()
     await RabbitMQPool.close_all()
     await key_rotation_service.stop()
     await cron_scheduler.stop()
