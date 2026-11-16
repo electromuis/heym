@@ -87,6 +87,7 @@ def run(inputs, config, ctx):
 - Branches work as Switch's do: blocks reached only through the other exits are skipped; a block reached from the chosen exit and
   from another one still runs. Loop-back edges are respected.
 - An error still goes to the node's error handling (retry, Error Handler), not to an exit.
+- An edge saved before the node had exits (no `exit-` handle) is not part of any exit and always runs.
 
 **Exits from a field.** `exitsFrom` makes one exit per distinct value of a column of a `list` field, in the order they first appear,
 after the fixed `exits`:
@@ -123,9 +124,11 @@ Today's field keys (`key`, `label`, `type`, `required`, `secret`, `default`, `op
 | `condition` | a yes/no expression in the Condition block's language, with its editor | the text, not evaluated: the handler checks it with `ctx.check` |
 | `list` | rows of sub-fields (`fields`; types `string`, `number`, `boolean`, `select`, `text`, `expression`, `condition`) | a list of objects |
 
-A `$`-expression is resolved before the handler runs, as today, also inside `list` rows, `keyValue` values and `json` strings.
+Before the handler runs, a value missing from the saved form takes its field's `default` (API 1 leaves it out), a field hidden by
+`showIf` is left out, and a `$`-expression is resolved as today, also inside `list` rows, `keyValue` values and `json` strings.
 A `condition` is left as text on purpose: a block that checks rules in order checks only the rows it reaches, so a later row that
-would fail on this input (a missing key) does no harm.
+would fail on this input (a division by zero, a call on a missing value) does no harm. A missing key
+reads as `null`, as everywhere in Heym.
 
 ### New keys per field
 
@@ -191,7 +194,7 @@ In an API 2 plugin, `ctx` is an object that still reads like the API 1 dict (`ct
 |---|---|
 | `ctx.node_id`, `ctx.node_label` | As before. |
 | `ctx.workflow_id`, `ctx.execution_id` | The run's workflow and execution. |
-| `ctx.log(text)` | A line in the node's run log. |
+| `ctx.log(text)` | A line in Heym's log, tagged with the plugin and the node. |
 | `ctx.check(condition)` | Evaluates a `condition` text on the node's inputs exactly as a Condition block would (same expression language, same `$` roots); `True` or `False`, raises with the expression's error. |
 | `ctx.evaluate(expression)` | The same for any `$`-expression; returns its value. |
 | `ctx.wait_token(key)` | Mints (once per key) the token that may resume a wait on `key`; give it to whoever will answer. |

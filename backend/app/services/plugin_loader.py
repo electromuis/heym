@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 from pathlib import Path
 from types import ModuleType
@@ -52,11 +53,40 @@ def _load_module(plugin_id: str, plugins_dir: Path) -> ModuleType:
     return module
 
 
-def call_handler(plugin_id: str, plugins_dir: Path, function_name: str, kwargs: dict) -> object:
+def has_function(plugin_id: str, plugins_dir: Path, function_name: str) -> bool:
+    """Whether the package's handler module defines this function."""
+    return callable(getattr(_load_module(plugin_id, plugins_dir), function_name, None))
+
+
+def accepted_kwargs(fn: object, optional: dict) -> dict:
+    """The optional keyword arguments a function takes: by name, or all of them with **kwargs.
+
+    Plugin API 2 adds arguments (``inputs_by_key``, ``event``) that an older handler doesn't
+    declare; passing them anyway would break it with a TypeError.
+    """
+    try:
+        parameters = inspect.signature(fn).parameters.values()  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters):
+        return dict(optional)
+    names = {p.name for p in parameters}
+    return {key: value for key, value in optional.items() if key in names}
+
+
+def call_handler(
+    plugin_id: str,
+    plugins_dir: Path,
+    function_name: str,
+    kwargs: dict,
+    optional_kwargs: dict | None = None,
+) -> object:
     module = _load_module(plugin_id, plugins_dir)
     fn = getattr(module, function_name, None)
     if not callable(fn):
         raise PluginRuntimeError(f"Plugin '{plugin_id}' has no '{function_name}' function")
+    if optional_kwargs:
+        kwargs = {**kwargs, **accepted_kwargs(fn, optional_kwargs)}
     try:
         return fn(**kwargs)
     except Exception as exc:
