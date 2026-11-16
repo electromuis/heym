@@ -307,7 +307,7 @@ The output's `rule` says in the run history which row held. Several rows may sha
 ## Listing (`GET /api/plugins`)
 
 Each package gains `pluginApi`, `palette` and `credentials` (without secrets); each node gains `group`, `color`, `subtitle`, `exits`,
-`exitsFrom`, `inputs`, `sample` and `source`. API 1 packages list these as absent.
+`exitsFrom`, `inputs`, `sample` and `source`. API 1 packages list them as `null`.
 
 ## What API 2 leaves out
 

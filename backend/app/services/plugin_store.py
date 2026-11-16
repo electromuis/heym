@@ -12,6 +12,8 @@ import zipfile
 from pathlib import Path
 from typing import BinaryIO
 
+from pydantic import ValidationError
+
 from app.models.plugin_schemas import PluginManifest
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,21 @@ MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 
 class PluginInstallError(Exception):
     """Raised when a plugin zip is invalid or installation fails."""
+
+
+def describe_manifest_errors(exc: ValidationError) -> str:
+    """The problems of a manifest by place and message, never quoting a value from it.
+
+    Pydantic's own text repeats the input, which may hold a field default a plugin
+    author did not mean to publish in an error message or a log line.
+    """
+    parts: list[str] = []
+    for error in exc.errors(include_input=False, include_url=False):
+        place = ".".join(str(item) for item in error.get("loc", ()))
+        message = str(error.get("msg", "invalid"))
+        message = message.removeprefix("Value error, ")
+        parts.append(f"{place}: {message}" if place else message)
+    return "; ".join(parts) or "invalid manifest"
 
 
 def _safe_members(zf: zipfile.ZipFile, dest_root: Path) -> list[zipfile.ZipInfo]:
@@ -66,6 +83,10 @@ def extract_and_validate(zip_bytes: bytes, plugins_dir: Path) -> PluginManifest:
             manifest = PluginManifest.model_validate(json.loads(zf.read("plugin.json")))
         except PluginInstallError:
             raise
+        except ValidationError as exc:
+            raise PluginInstallError(
+                f"Invalid plugin.json: {describe_manifest_errors(exc)}"
+            ) from exc
         except Exception as exc:
             raise PluginInstallError(f"Invalid plugin.json: {exc}") from exc
         if manifest.entry not in names:

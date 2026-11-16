@@ -14,8 +14,10 @@ from app.config import settings
 from app.db.models import Plugin, User
 from app.db.session import get_db
 from app.models.plugin_schemas import (
+    PluginCredentialTypeDef,
     PluginDoc,
     PluginManifest,
+    PluginNodeDef,
     PluginNodeSummary,
     PluginSummary,
 )
@@ -73,6 +75,7 @@ def _resolve_icon(plugin_id: str, manifest: PluginManifest, node_key: str | None
 
 def _to_summary(plugin: Plugin) -> PluginSummary:
     manifest = PluginManifest.model_validate(plugin.manifest)
+    api2 = manifest.plugin_api >= 2
     nodes = [
         PluginNodeSummary(
             key=node.key,
@@ -83,6 +86,7 @@ def _to_summary(plugin: Plugin) -> PluginSummary:
             dsl_hint=node.dsl_hint,
             doc_slug=node.doc_slug,
             has_icon=_resolve_icon(plugin.plugin_id, manifest, node.key) is not None,
+            **(_api2_node_keys(manifest, node) if api2 else {}),
         )
         for node in manifest.resolved_nodes()
     ]
@@ -95,7 +99,30 @@ def _to_summary(plugin: Plugin) -> PluginSummary:
         enabled=plugin.enabled,
         nodes=nodes,
         has_icon=_safe_icon_path(plugin.plugin_id, "icon.svg") is not None,
+        plugin_api=manifest.plugin_api,
+        palette=manifest.palette if api2 else None,
+        credentials=[_public_credential_type(c) for c in manifest.credentials] if api2 else None,
     )
+
+
+def _api2_node_keys(manifest: PluginManifest, node: PluginNodeDef) -> dict:
+    """The Plugin API 2 keys of a node's listing; the colour already falls back to group and package."""
+    return {
+        "group": node.group,
+        "color": manifest.node_color(node),
+        "subtitle": node.subtitle,
+        "exits": node.exits,
+        "exits_from": node.exits_from,
+        "inputs": node.inputs,
+        "sample": node.sample,
+        "source": node.source,
+    }
+
+
+def _public_credential_type(definition: PluginCredentialTypeDef) -> PluginCredentialTypeDef:
+    """A credential type as the browser sees it: a secret field never carries a default."""
+    fields = [f.model_copy(update={"default": None}) if f.secret else f for f in definition.fields]
+    return definition.model_copy(update={"fields": fields})
 
 
 @router.get("", response_model=list[PluginSummary])

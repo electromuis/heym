@@ -1,0 +1,603 @@
+{
+  "id": "rtteam",
+  "name": "rtteam (dummy)",
+  "version": "0.1.3",
+  "description": "The nodes the rtteam hub offers to Heym (D18, H2), as a clickdummy: the forms and the outputs are the real ones, the answers are made up. README.md says what each node gives back.",
+  "entry": "handler.py",
+  "nodes": [
+    {
+      "key": "teamAgents",
+      "name": "The team's agents",
+      "kind": "action",
+      "function": "team_agents",
+      "description": "Each agent of the team with what this chat message means for it (a DM to it, a mention, a reply to it, its home), plus who wrote it and what they may do.",
+      "dslHint": "Use right after a Chat message event, before a loop over the agents.",
+      "fields": [
+        {
+          "key": "message",
+          "label": "Message (from the Chat message event)",
+          "type": "string",
+          "required": true,
+          "expression": true,
+          "default": "$chatMessage.body"
+        }
+      ]
+    },
+    {
+      "key": "agentInfo",
+      "name": "Agent info",
+      "kind": "action",
+      "function": "agent_info",
+      "description": "One agent: its chat account, its homes, its runtime and model, whether it is busy and how much waits for it.",
+      "fields": [
+        {
+          "key": "asAgent",
+          "label": "Agent",
+          "type": "select",
+          "required": true,
+          "default": "$eachAgent.item.agent",
+          "options": [
+            {
+              "label": "the agent of 'For each agent'",
+              "value": "$eachAgent.item.agent"
+            },
+            {
+              "label": "the agent the block before names",
+              "value": "@item"
+            },
+            {
+              "label": "assistant",
+              "value": "assistant"
+            },
+            {
+              "label": "goofy",
+              "value": "goofy"
+            },
+            {
+              "label": "penny",
+              "value": "penny"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "mayThey",
+      "name": "May they?",
+      "kind": "action",
+      "function": "may_they",
+      "description": "Whether a person holds a right, from the team's roles. Follow it with a Condition on `allowed`.",
+      "fields": [
+        {
+          "key": "person",
+          "label": "Person (from an event)",
+          "type": "string",
+          "required": true,
+          "expression": true,
+          "default": "$teamAgents.author"
+        },
+        {
+          "key": "right",
+          "label": "Right",
+          "type": "select",
+          "required": true,
+          "default": "talk",
+          "options": [
+            {
+              "label": "talk (wake agents)",
+              "value": "talk"
+            },
+            {
+              "label": "dm (wake agents by DM)",
+              "value": "dm"
+            },
+            {
+              "label": "approve (go, approval answers)",
+              "value": "approve"
+            },
+            {
+              "label": "stop (stop runs)",
+              "value": "stop"
+            },
+            {
+              "label": "reset_hops (outside input)",
+              "value": "reset_hops"
+            },
+            {
+              "label": "view (control center)",
+              "value": "view"
+            },
+            {
+              "label": "configure (agents, flows)",
+              "value": "configure"
+            },
+            {
+              "label": "admin (roles, secrets)",
+              "value": "admin"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "runAgent",
+      "name": "Run the agent",
+      "kind": "action",
+      "function": "run_agent",
+      "description": "Queue a run of the agent: its own Claude CLI in its own runner, with its session. Answers at once; the Run ended event says how it ended.",
+      "fields": [
+        {
+          "key": "asAgent",
+          "label": "Agent",
+          "type": "select",
+          "required": true,
+          "default": "$eachAgent.item.agent",
+          "options": [
+            {
+              "label": "the agent of 'For each agent'",
+              "value": "$eachAgent.item.agent"
+            },
+            {
+              "label": "the agent the block before names",
+              "value": "@item"
+            },
+            {
+              "label": "assistant",
+              "value": "assistant"
+            },
+            {
+              "label": "goofy",
+              "value": "goofy"
+            },
+            {
+              "label": "penny",
+              "value": "penny"
+            }
+          ]
+        },
+        {
+          "key": "prompt",
+          "label": "Prompt",
+          "type": "string",
+          "required": true,
+          "expression": true,
+          "default": "$teamAgents.message.text"
+        },
+        {
+          "key": "message",
+          "label": "The message that asked (empty: nobody's message asked)",
+          "type": "string",
+          "expression": true,
+          "default": "$teamAgents.message"
+        },
+        {
+          "key": "session",
+          "label": "Session",
+          "type": "select",
+          "default": "room",
+          "options": [
+            {
+              "label": "the one kept for this room",
+              "value": "room"
+            },
+            {
+              "label": "the thread's",
+              "value": "thread"
+            },
+            {
+              "label": "a new one",
+              "value": "new"
+            }
+          ]
+        },
+        {
+          "key": "via",
+          "label": "Woken by (auto, reply, channel, schedule, flow)",
+          "type": "string",
+          "expression": true,
+          "default": "auto"
+        },
+        {
+          "key": "afterStop",
+          "label": "After a stop: tell it what was stopped",
+          "type": "boolean",
+          "default": false
+        }
+      ]
+    },
+    {
+      "key": "stopRun",
+      "name": "Stop a run",
+      "kind": "action",
+      "function": "stop_run",
+      "description": "Stop what an agent is doing now, or every run in a room or thread; with 'also what waits', the queue too.",
+      "fields": [
+        {
+          "key": "what",
+          "label": "Stop",
+          "type": "select",
+          "default": "agent",
+          "options": [
+            {
+              "label": "this agent's run",
+              "value": "agent"
+            },
+            {
+              "label": "every run in the room or thread",
+              "value": "room"
+            }
+          ]
+        },
+        {
+          "key": "asAgent",
+          "label": "Agent",
+          "type": "select",
+          "default": "$eachAgent.item.agent",
+          "options": [
+            {
+              "label": "the agent of 'For each agent'",
+              "value": "$eachAgent.item.agent"
+            },
+            {
+              "label": "the agent the block before names",
+              "value": "@item"
+            },
+            {
+              "label": "assistant",
+              "value": "assistant"
+            },
+            {
+              "label": "goofy",
+              "value": "goofy"
+            },
+            {
+              "label": "penny",
+              "value": "penny"
+            }
+          ]
+        },
+        {
+          "key": "room",
+          "label": "Room or thread (for 'every run')",
+          "type": "string",
+          "expression": true,
+          "default": "$teamAgents.message.room"
+        },
+        {
+          "key": "alsoQueued",
+          "label": "Also what waits for it",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "key": "reason",
+          "label": "Why (shown in the trace)",
+          "type": "string",
+          "expression": true,
+          "default": "a stop in the chat"
+        }
+      ]
+    },
+    {
+      "key": "forgetSession",
+      "name": "Forget the session",
+      "kind": "action",
+      "function": "forget_session",
+      "description": "The agent's next run in this room or thread starts without its kept session.",
+      "fields": [
+        {
+          "key": "asAgent",
+          "label": "Agent",
+          "type": "select",
+          "required": true,
+          "default": "$eachAgent.item.agent",
+          "options": [
+            {
+              "label": "the agent of 'For each agent'",
+              "value": "$eachAgent.item.agent"
+            },
+            {
+              "label": "the agent the block before names",
+              "value": "@item"
+            },
+            {
+              "label": "assistant",
+              "value": "assistant"
+            },
+            {
+              "label": "goofy",
+              "value": "goofy"
+            },
+            {
+              "label": "penny",
+              "value": "penny"
+            }
+          ]
+        },
+        {
+          "key": "room",
+          "label": "Room or thread",
+          "type": "string",
+          "required": true,
+          "expression": true,
+          "default": "$teamAgents.message.room"
+        }
+      ]
+    },
+    {
+      "key": "postMessage",
+      "name": "Post a message",
+      "kind": "action",
+      "function": "post_message",
+      "description": "Post as the agent's own chat account, or as the hub's (notices), in a room or thread, as a reply or not.",
+      "fields": [
+        {
+          "key": "asAgent",
+          "label": "As",
+          "type": "select",
+          "required": true,
+          "default": "$eachAgent.item.agent",
+          "options": [
+            {
+              "label": "the agent of 'For each agent'",
+              "value": "$eachAgent.item.agent"
+            },
+            {
+              "label": "the agent the block before names",
+              "value": "@item"
+            },
+            {
+              "label": "assistant",
+              "value": "assistant"
+            },
+            {
+              "label": "goofy",
+              "value": "goofy"
+            },
+            {
+              "label": "penny",
+              "value": "penny"
+            },
+            {
+              "label": "the hub (notices)",
+              "value": "@hub"
+            }
+          ]
+        },
+        {
+          "key": "text",
+          "label": "Text",
+          "type": "string",
+          "required": true,
+          "expression": true
+        },
+        {
+          "key": "room",
+          "label": "Room or thread (empty: where the reply's message is)",
+          "type": "string",
+          "expression": true
+        },
+        {
+          "key": "replyTo",
+          "label": "As a reply to (a message from an event; empty: no reply)",
+          "type": "string",
+          "expression": true
+        },
+        {
+          "key": "files",
+          "label": "Files (from an event or a run)",
+          "type": "string",
+          "expression": true
+        },
+        {
+          "key": "silent",
+          "label": "Without pinging anyone",
+          "type": "boolean",
+          "default": false
+        }
+      ]
+    },
+    {
+      "key": "react",
+      "name": "React",
+      "kind": "action",
+      "function": "react",
+      "description": "Put an emoji on a message, as the agent, or take its emoji off.",
+      "fields": [
+        {
+          "key": "asAgent",
+          "label": "As",
+          "type": "select",
+          "required": true,
+          "default": "$eachAgent.item.agent",
+          "options": [
+            {
+              "label": "the agent of 'For each agent'",
+              "value": "$eachAgent.item.agent"
+            },
+            {
+              "label": "the agent the block before names",
+              "value": "@item"
+            },
+            {
+              "label": "assistant",
+              "value": "assistant"
+            },
+            {
+              "label": "goofy",
+              "value": "goofy"
+            },
+            {
+              "label": "penny",
+              "value": "penny"
+            }
+          ]
+        },
+        {
+          "key": "message",
+          "label": "Message (from an event)",
+          "type": "string",
+          "required": true,
+          "expression": true,
+          "default": "$teamAgents.message"
+        },
+        {
+          "key": "emoji",
+          "label": "Emoji",
+          "type": "string",
+          "required": true,
+          "default": "👀"
+        },
+        {
+          "key": "remove",
+          "label": "Take it off instead",
+          "type": "boolean",
+          "default": false
+        }
+      ]
+    },
+    {
+      "key": "openThread",
+      "name": "Open a thread",
+      "kind": "action",
+      "function": "open_thread",
+      "description": "Open a thread on a message, as the agent. Gives back the thread, for Post a message or Run the agent.",
+      "fields": [
+        {
+          "key": "asAgent",
+          "label": "As",
+          "type": "select",
+          "required": true,
+          "default": "$eachAgent.item.agent",
+          "options": [
+            {
+              "label": "the agent of 'For each agent'",
+              "value": "$eachAgent.item.agent"
+            },
+            {
+              "label": "the agent the block before names",
+              "value": "@item"
+            },
+            {
+              "label": "assistant",
+              "value": "assistant"
+            },
+            {
+              "label": "goofy",
+              "value": "goofy"
+            },
+            {
+              "label": "penny",
+              "value": "penny"
+            }
+          ]
+        },
+        {
+          "key": "message",
+          "label": "On message (from an event)",
+          "type": "string",
+          "required": true,
+          "expression": true,
+          "default": "$teamAgents.message"
+        },
+        {
+          "key": "title",
+          "label": "Title",
+          "type": "string",
+          "required": true,
+          "expression": true
+        }
+      ]
+    },
+    {
+      "key": "askApproval",
+      "name": "Ask for approval",
+      "kind": "action",
+      "function": "ask_approval",
+      "description": "Post a question with buttons, as the agent. Answers at once with the approval's id; the Approval answered event brings the answer.",
+      "fields": [
+        {
+          "key": "asAgent",
+          "label": "As",
+          "type": "select",
+          "required": true,
+          "default": "$eachAgent.item.agent",
+          "options": [
+            {
+              "label": "the agent of 'For each agent'",
+              "value": "$eachAgent.item.agent"
+            },
+            {
+              "label": "the agent the block before names",
+              "value": "@item"
+            },
+            {
+              "label": "assistant",
+              "value": "assistant"
+            },
+            {
+              "label": "goofy",
+              "value": "goofy"
+            },
+            {
+              "label": "penny",
+              "value": "penny"
+            }
+          ]
+        },
+        {
+          "key": "question",
+          "label": "Question",
+          "type": "string",
+          "required": true,
+          "expression": true
+        },
+        {
+          "key": "buttons",
+          "label": "Buttons (comma between them)",
+          "type": "string",
+          "default": "Approve, Decline"
+        },
+        {
+          "key": "whoMayAnswer",
+          "label": "Who may answer",
+          "type": "select",
+          "default": "approve",
+          "options": [
+            {
+              "label": "anyone with the right 'approve'",
+              "value": "approve"
+            },
+            {
+              "label": "the owner only",
+              "value": "owner"
+            },
+            {
+              "label": "the one who asked",
+              "value": "asker"
+            }
+          ]
+        },
+        {
+          "key": "room",
+          "label": "Room or thread (empty: where the message is)",
+          "type": "string",
+          "expression": true
+        },
+        {
+          "key": "replyTo",
+          "label": "As a reply to (a message from an event)",
+          "type": "string",
+          "expression": true,
+          "default": "$teamAgents.message"
+        },
+        {
+          "key": "timeoutHours",
+          "label": "Gives up after (hours)",
+          "type": "number",
+          "default": 24
+        }
+      ]
+    }
+  ]
+}
