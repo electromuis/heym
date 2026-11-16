@@ -1,17 +1,21 @@
-"""Plugin management API (install/uninstall/list/toggle)."""
+"""Plugin management API (install/uninstall/list/toggle) and Plugin API 2's options route."""
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.config import settings
-from app.db.models import Plugin, User
+from app.db.models import CredentialType, Plugin, User
 from app.db.session import get_db
 from app.models.plugin_schemas import (
     PluginCredentialTypeDef,
@@ -20,8 +24,10 @@ from app.models.plugin_schemas import (
     PluginNodeDef,
     PluginNodeSummary,
     PluginSummary,
+    walk_fields,
 )
-from app.services import plugin_loader, plugin_store
+from app.services import plugin_credentials, plugin_loader, plugin_store
+from app.services.encryption import decrypt_config
 from app.services.plugin_store import PluginInstallError
 
 router = APIRouter()
@@ -245,3 +251,113 @@ async def uninstall_plugin(
     plugin_store.remove_plugin_dir(plugin_id, plugin_store.plugins_root())
     plugin_loader.clear_cache()
     return {"status": "uninstalled", "plugin_id": plugin_id}
+
+
+#: How long a form waits for a plugin's options before showing its static ones.
+OPTIONS_TIMEOUT_SECONDS = 10.0
+
+
+class PluginOptionsRequest(BaseModel):
+    node: str
+    field: str
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class PluginOption(BaseModel):
+    label: str
+    value: str
+
+
+async def _enabled_manifest(db: AsyncSession, plugin_id: str) -> PluginManifest:
+    plugin = (
+        await db.execute(select(Plugin).where(Plugin.plugin_id == plugin_id))
+    ).scalar_one_or_none()
+    if plugin is None or not plugin.enabled:
+        raise HTTPException(status_code=404, detail="Plugin not found")
+    return PluginManifest.model_validate(plugin.manifest)
+
+
+async def _with_credentials(
+    db: AsyncSession,
+    manifest: PluginManifest,
+    node: PluginNodeDef,
+    config: dict,
+    user: User,
+    secrets: list[str],
+) -> dict:
+    """The form's values with each top-level credential field replaced by the user's values."""
+    from app.api.credentials import _get_accessible_credential
+
+    out = dict(config)
+    for field in node.fields:
+        if field.type != "credential" or not out.get(field.key):
+            continue
+        try:
+            credential_id = uuid.UUID(str(out[field.key]))
+        except ValueError:
+            out[field.key] = None
+            continue
+        credential = await _get_accessible_credential(db, credential_id, user)
+        if credential is None or credential.type != CredentialType.plugin:
+            out[field.key] = None
+            continue
+        stored = decrypt_config(credential.encrypted_config)
+        out[field.key] = plugin_credentials.values_for_run(
+            stored, manifest.id, field.credential_type or "", field.label
+        )
+        secrets.extend(plugin_credentials.secret_values(stored))
+    return out
+
+
+def _as_options(result: object) -> list[PluginOption]:
+    if not isinstance(result, list):
+        raise ValueError("an options function must return a list")
+    options: list[PluginOption] = []
+    for item in result:
+        if isinstance(item, dict) and "value" in item:
+            value = str(item["value"])
+            options.append(PluginOption(label=str(item.get("label", value)), value=value))
+        elif isinstance(item, (str, int, float)) and not isinstance(item, bool):
+            options.append(PluginOption(label=str(item), value=str(item)))
+        else:
+            raise ValueError("an option is a text or an object with label and value")
+    return options
+
+
+@router.post("/{plugin_id}/options", response_model=list[PluginOption])
+async def load_plugin_options(
+    plugin_id: str,
+    body: PluginOptionsRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[PluginOption]:
+    """A pick-list's options from the plugin (`loadOptions`), for the form as it is filled in."""
+    require_plugins_enabled()
+    manifest = await _enabled_manifest(db, plugin_id)
+    node = manifest.get_node(body.node)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Plugin node not found")
+    field = next((f for f in walk_fields(node.fields) if f.key == body.field), None)
+    function = field.load_options_function() if field is not None else None
+    if function is None:
+        raise HTTPException(status_code=404, detail="This field has no loaded options")
+    secrets: list[str] = []
+    config = await _with_credentials(db, manifest, node, body.config, current_user, secrets)
+    ctx = {"plugin_id": plugin_id, "node_key": node.key, "user_id": str(current_user.id)}
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                plugin_loader.call_handler,
+                plugin_id,
+                plugin_store.plugins_root(),
+                function,
+                {"config": config, "ctx": ctx},
+            ),
+            timeout=OPTIONS_TIMEOUT_SECONDS,
+        )
+        return _as_options(result)
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="The plugin took too long") from exc
+    except (plugin_loader.PluginRuntimeError, ValueError) as exc:
+        detail = plugin_credentials.mask_text(str(exc), secrets)
+        raise HTTPException(status_code=422, detail=detail) from exc
