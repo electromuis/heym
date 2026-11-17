@@ -65,6 +65,7 @@ _API2_NODE_KEYS = (
     "inputs",
     "sample",
     "source",
+    "loop",
 )
 _API2_FIELD_KEYS = (
     "help",
@@ -284,6 +285,7 @@ class PluginNodeDef(BaseModel):
     inputs: list[PluginInput] = Field(default_factory=list)
     sample: dict[str, Any] | None = None
     source: Literal["push", "loop"] | None = None
+    loop: bool = False
 
     model_config = {"populate_by_name": True}
 
@@ -320,6 +322,15 @@ class PluginNodeDef(BaseModel):
             raise ValueError(f"{where}: only a trigger has a `source`")
         if self.inputs and self.kind == "trigger":
             raise ValueError(f"{where}: a trigger has no inputs")
+        if self.loop:
+            # A loop node's exits and its loop-back input are fixed (docs/plugin-api-2.md, "Loop nodes").
+            if self.kind != "action":
+                raise ValueError(f"{where}: only an action can be a loop")
+            if self.exits or self.exits_from is not None or self.inputs:
+                raise ValueError(
+                    f"{where}: a loop has the exits step and done by itself; "
+                    "it declares no exits, exitsFrom or inputs"
+                )
         check_show_if(self.fields, where)
         if self.exits_from is not None:
             list_field = next((f for f in self.fields if f.key == self.exits_from.field), None)
@@ -330,11 +341,15 @@ class PluginNodeDef(BaseModel):
         return self
 
     def has_exits(self) -> bool:
-        return bool(self.exits) or self.exits_from is not None
+        return bool(self.exits) or self.exits_from is not None or self.loop
+
+    def listed_exits(self) -> list[PluginExit]:
+        """The exits the canvas draws: a loop's fixed two, else the declared ones."""
+        return list(LOOP_EXITS) if self.loop else self.exits
 
     def exit_keys(self, config: dict | None = None) -> list[str]:
         """The node's exits in order: the fixed ones, then those of the `exitsFrom` column."""
-        keys = [e.key for e in self.exits]
+        keys = [e.key for e in self.listed_exits()]
         if self.exits_from is not None:
             rows = (config or {}).get(self.exits_from.field)
             for row in rows if isinstance(rows, list) else []:
@@ -342,6 +357,9 @@ class PluginNodeDef(BaseModel):
                 if is_exit_value(value) and value not in keys:
                     keys.append(value)
         return keys
+
+
+LOOP_EXITS = (PluginExit(key="step", label="step"), PluginExit(key="done", label="done"))
 
 
 def is_exit_value(value: object) -> bool:
@@ -558,6 +576,7 @@ class PluginNodeSummary(BaseModel):
     inputs: list[PluginInput] | None = None
     sample: dict[str, Any] | None = None
     source: str | None = None
+    loop: bool | None = None
 
     model_config = {"populate_by_name": True}
 

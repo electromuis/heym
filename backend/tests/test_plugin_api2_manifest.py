@@ -238,7 +238,7 @@ class PluginApi2ListingTests(unittest.TestCase):
         self.assertIsNone(summary["palette"])
         self.assertIsNone(summary["credentials"])
         node = summary["nodes"][0]
-        for key in ("group", "color", "subtitle", "exits", "exitsFrom", "inputs", "source"):
+        for key in ("group", "color", "subtitle", "exits", "exitsFrom", "inputs", "source", "loop"):
             self.assertIsNone(node[key], key)
 
     def test_api2_listing(self) -> None:
@@ -261,6 +261,20 @@ class PluginApi2ListingTests(unittest.TestCase):
         self.assertEqual([e["key"] for e in node["exits"]], ["otherwise"])
         defaults = [f["default"] for f in summary["credentials"][0]["fields"]]
         self.assertEqual(defaults, ["http://hub", None])
+
+
+class PluginApi2LoopListingTests(PluginApi2ListingTests):
+    def test_a_loop_lists_its_two_exits(self) -> None:
+        raw = {
+            "pluginApi": 2,
+            "id": "acme",
+            "name": "Acme",
+            "version": "1",
+            "nodes": [{"key": "l", "name": "L", "kind": "action", "loop": True}],
+        }
+        node = self._summary(raw)["nodes"][0]
+        self.assertTrue(node["loop"])
+        self.assertEqual([e["key"] for e in node["exits"]], ["step", "done"])
 
 
 if __name__ == "__main__":

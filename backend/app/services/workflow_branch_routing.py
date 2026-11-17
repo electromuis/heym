@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.plugin_loops import is_loop_node
+
 
 class WorkflowBranchRoutingMixin:
     def _is_loop_back_edge(self, edge: dict) -> bool:
         """Return whether an edge loops back into a loop node's loop handle."""
-        return (
-            edge.get("targetHandle") == "loop"
-            and self.nodes.get(edge.get("target"), {}).get("type") == "loop"
+        return edge.get("targetHandle") == "loop" and is_loop_node(
+            self.nodes.get(edge.get("target"), {})
         )
 
     @staticmethod
@@ -207,7 +208,7 @@ class WorkflowBranchRoutingMixin:
                     for edge in edges
                     if edge["target"] == candidate
                     and not (
-                        self.nodes.get(candidate, {}).get("type") == "loop"
+                        is_loop_node(self.nodes.get(candidate, {}))
                         and edge.get("targetHandle") == "loop"
                     )
                 ]

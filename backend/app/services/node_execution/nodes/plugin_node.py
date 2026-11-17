@@ -8,6 +8,7 @@ from app.services import (
     plugin_context,
     plugin_credentials,
     plugin_loader,
+    plugin_loops,
     plugin_store,
     plugin_waits,
 )
@@ -94,7 +95,12 @@ def _waiting_result(
     config: dict,
     request: plugin_waits.PluginWaitRequested,
 ) -> object:
-    if request.timeout is not None and "timedOut" not in node_def.exit_keys(config):
+    # A loop's pass is woken by a timeout like any wait, and still answers with step or done.
+    if (
+        request.timeout is not None
+        and not node_def.loop
+        and "timedOut" not in node_def.exit_keys(config)
+    ):
         raise ValueError(
             f"Plugin node {node_def.key} waits with a timeout but declares no timedOut exit"
         )
@@ -117,7 +123,10 @@ def _execute_api2(
     raw_config = ctx.node_data.get("config", {}) or {}
     secrets: list[str] = []
     config = plugin_context.resolve_config(ctx, node_def.fields, raw_config, manifest.id, secrets)
-    plugin_ctx = plugin_context.PluginContext(ctx, manifest, node_def, resume=_take_resume(ctx))
+    loop = plugin_loops.begin_pass(ctx) if node_def.loop else None
+    plugin_ctx = plugin_context.PluginContext(
+        ctx, manifest, node_def, resume=_take_resume(ctx), loop=loop
+    )
     try:
         result = plugin_loader.call_handler(
             manifest.id,
@@ -135,6 +144,8 @@ def _execute_api2(
             plugin_credentials.mask_text(str(exc), secrets)
         ) from None
     output = result if isinstance(result, dict) else {"value": result}
-    if node_def.has_exits():
+    if loop is not None:
+        plugin_loops.finish_pass(ctx, node_def.key, loop, output)
+    elif node_def.has_exits():
         plugin_context.route_exit(ctx, node_def, config, output)
     return plugin_credentials.mask_output(output, secrets)

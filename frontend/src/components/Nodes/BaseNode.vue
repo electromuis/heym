@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted } from "vue";
 import { Handle, Position, useVueFlow } from "@vue-flow/core";
 import {
   AlertCircle,
@@ -14,6 +14,7 @@ import {
 import type { NodeData, NodeType } from "@/types/workflow";
 
 import PluginIcon from "@/components/Panels/PluginIcon.vue";
+import { isPluginLoopNode, usePluginCatalog } from "@/composables/usePluginCatalog";
 import { isTileFillingIcon, nodeIconColorClass, nodeIcons } from "@/lib/nodeIcons";
 import { cn } from "@/lib/utils";
 
@@ -133,8 +134,18 @@ const hasInput = computed(
     && props.type !== "heymTrigger"
     && !(props.type === "rabbitmq" && props.data.rabbitmqOperation === "receive")
 );
+const { plugins: pluginCatalog, loadPluginCatalog } = usePluginCatalog();
+// A Plugin API 2 loop node has Loop's handles: step and done out, and loop for the edge back in.
+const isPluginLoop = computed(
+  () => props.type === "plugin"
+    && isPluginLoopNode(pluginCatalog.value, props.data.pluginId, props.data.pluginNodeKey),
+);
+onMounted(() => {
+  if (props.type === "plugin") void loadPluginCatalog();
+});
 const hasOutput = computed(() => {
   if (isToolNode.value) return false;
+  if (isPluginLoop.value) return false;
   if (isSubAgentNode.value) return false;
   if (props.type === "output") {
     return props.data.allowDownstream === true;
@@ -824,6 +835,55 @@ const hasThrowErrorWarning = computed(() => {
           class="!w-3.5 !h-3.5 !relative !transform-none !top-0 !right-0"
         />
       </div>
+    </div>
+
+    <div
+      v-if="isPluginLoop"
+      class="absolute -right-1 top-1/2 -translate-y-1/2 flex flex-col items-end gap-5"
+    >
+      <div class="flex items-center">
+        <span class="text-[10px] text-node-loop font-medium mr-1.5 px-1.5 py-0.5 rounded bg-node-loop/10">step</span>
+        <Handle
+          id="exit-step"
+          type="source"
+          :position="Position.Right"
+          class="!w-3.5 !h-3.5 !relative !transform-none !top-0 !right-0"
+        />
+      </div>
+      <div class="flex items-center">
+        <span class="text-[10px] text-success font-medium mr-1.5 px-1.5 py-0.5 rounded bg-success/10">done</span>
+        <Handle
+          id="exit-done"
+          type="source"
+          :position="Position.Right"
+          class="!w-3.5 !h-3.5 !relative !transform-none !top-0 !right-0"
+        />
+      </div>
+      <div
+        v-if="hasErrorOutput"
+        class="flex items-center"
+      >
+        <span class="text-[10px] text-destructive font-medium mr-1.5 px-1.5 py-0.5 rounded bg-destructive/10">error</span>
+        <Handle
+          id="error"
+          type="source"
+          :position="Position.Right"
+          class="!w-3.5 !h-3.5 !relative !transform-none !top-0 !right-0"
+        />
+      </div>
+    </div>
+
+    <div
+      v-if="isPluginLoop"
+      class="absolute -left-1 bottom-1 flex items-center"
+    >
+      <Handle
+        id="loop"
+        type="target"
+        :position="Position.Left"
+        class="!w-3.5 !h-3.5 !relative !transform-none !top-0 !left-0"
+      />
+      <span class="text-[10px] text-node-loop font-medium ml-1.5 px-1.5 py-0.5 rounded bg-node-loop/10">loop</span>
     </div>
 
     <div

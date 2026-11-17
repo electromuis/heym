@@ -2,7 +2,7 @@
 
 Plugin API 2 adds options to Heym's plugin manifest and handler interface. A plugin can then have its own palette section,
 coloured nodes with several exits, richer forms, its own credential types, options loaded at run time, triggers that hear
-events, and nodes that pause a run until something outside answers.
+events, nodes that pause a run until something outside answers, and nodes that loop like the Loop block.
 
 Every new key is optional. A manifest without `"pluginApi": 2` is an API 1 manifest and behaves exactly as before.
 
@@ -68,6 +68,7 @@ New keys next to today's `key`, `name`, `kind`, `function`, `description`, `icon
 | `inputs` | list | one unnamed input | Named inputs, each a handle like Merge's: `key`, `label`. See "Inputs". |
 | `sample` | JSON object | none | An example of what the node gives back. The expression dialog and autocomplete use it before the node has run. |
 | `source` | `push`, `loop` | none | Triggers only: how the trigger hears events. See "Triggers". |
+| `loop` | `true` | `false` | Actions only: the node loops like the Loop block. See "Loop nodes". |
 
 ### Exits
 
@@ -200,6 +201,7 @@ In an API 2 plugin, `ctx` is an object that still reads like the API 1 dict (`ct
 | `ctx.wait_token(key)` | Mints (once per key) the token that may resume a wait on `key`; give it to whoever will answer. |
 | `ctx.wait(key, timeout=None)` | Pauses the run here. See "Pausing a run". |
 | `ctx.resume` | When the node runs again after a wait: the body that resumed it, else `None`. |
+| `ctx.loop` | In a loop node: `{"index", "state"}` of this pass (see "Loop nodes"); else `None`. |
 
 ## Triggers
 
@@ -290,6 +292,56 @@ def run(inputs, config, ctx):
 - Stored in the table `plugin_waits` (`app/services/plugin_waits.py`); a resumed run is written to its history row as a resumed
   review is.
 
+## Loop nodes
+
+An action with `"loop": true` loops like the Loop block, but it gets its next item while it runs instead of from a list fixed
+at the start. A pass may wait for something outside (`ctx.wait`), so a loop over the steps of a long job holds no thread while
+it waits and goes on after a restart.
+
+```json
+{"key": "eachStep", "name": "Each step", "kind": "action", "function": "each_step", "loop": true}
+```
+
+```python
+def each_step(inputs, config, ctx):
+    job = ctx.loop["state"].get("job") or start_job(config)
+    if ctx.resume is None:
+        ctx.wait_token(f"{job}-{ctx.loop['index']}")      # give it to the job
+        ctx.wait(f"{job}-{ctx.loop['index']}", timeout=3600)
+    step = ctx.resume
+    if step.get("exit") == "timedOut" or step.get("last"):
+        return {"exit": "done", "job": job}
+    return {"exit": "step", "step": step, "state": {"job": job}}
+
+
+def loop_end(state, ctx):                                   # the run stopped before the loop said done
+    cancel_job(state.get("job"))
+```
+
+- The node has Loop's handles: the exits `step` (handle `exit-step`, the body hangs from it) and `done` (`exit-done`), and an
+  input `loop` for the edge back from the end of the body. An edge into `loop` is a loop-back edge, as it is for the Loop block.
+  Such a node declares no `exits`, `exitsFrom` or `inputs`; doing so is an install error.
+- A pass is one call of the handler. `ctx.loop` is `{"index": <pass, from 0>, "state": <object>}`: `state` is what the previous
+  pass returned under `state`, `{}` on the first pass. On later passes `inputs` also holds the output of the block whose edge came
+  back into `loop`.
+- The result's `exit` says what comes next: `step` (also when `exit` is missing) runs the body with the result as the node's
+  output, and the edge back into `loop` starts the next pass; `done` leaves the loop. Any other `exit` fails the node:
+  `Plugin loop node eachStep returned an unknown exit; declared: step, done`.
+- `state` must be a JSON object. It is kept with the run (and with a paused run's snapshot) and left out of the output.
+- The output of `done` is that pass's result. The passes' outputs are not collected, as Loop's `results` would grow with every
+  step.
+- A pass may `ctx.wait` as any node may. When it resumes, the same pass runs again from the start with the same `ctx.loop` and
+  `ctx.resume` set. A timeout gives `ctx.resume = {"exit": "timedOut"}`; the handler still answers `step` or `done`, so a loop node
+  needs no `timedOut` exit.
+- Nested in a Loop block (or another loop node), the loop starts over on the outer loop's next item. A Loop block may sit in the
+  body of a loop node. Lead the inner loop's `done` through a block before the edge back into the outer loop, as with two Loop
+  blocks.
+- When the run ends while the loop is open (it is stopped, fails or times out, also while it waits), the package's
+  `loop_end_<node key>(state, ctx)` or else `loop_end(state, ctx)` is called, when it has one, with the last pass's `state`.
+  `ctx` has `node_id`, `node_label`, `workflow_id`, `execution_id` and `log`. An error in `loop_end` is logged; the run has ended
+  either way. A loop that said `done` gets no `loop_end`.
+- An API 1 manifest with `"loop"` keeps today's behaviour: the key is ignored and the node runs once.
+
 ## Worked example: a Rules block
 
 Ordered yes/no rules about different facts, where the first that holds wins, are a chain of Condition blocks in stock Heym, and
@@ -324,7 +376,8 @@ The output's `rule` says in the run history which row held. Several rows may sha
 ## Listing (`GET /api/plugins`)
 
 Each package gains `pluginApi`, `palette` and `credentials` (without secrets); each node gains `group`, `color`, `subtitle`, `exits`,
-`exitsFrom`, `inputs`, `sample` and `source`. API 1 packages list them as `null`.
+`exitsFrom`, `inputs`, `sample`, `source` and `loop` (a loop node lists its exits `step` and `done`). API 1 packages list them as
+`null`.
 
 ## What API 2 leaves out
 

@@ -281,6 +281,9 @@ export interface PluginNodeSummary {
   dsl_hint?: string;
   doc_slug?: string;
   has_icon?: boolean;
+  // Plugin API 2 (null for API 1 packages)
+  exits?: { key: string; label?: string; color?: string | null }[] | null;
+  loop?: boolean | null;
 }
 
 export interface PluginSummary {

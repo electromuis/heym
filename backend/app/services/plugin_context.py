@@ -28,6 +28,7 @@ class PluginContext(Mapping):
         manifest: PluginManifest,
         node_def: PluginNodeDef,
         resume: dict | None = None,
+        loop: dict | None = None,
     ) -> None:
         self._exec = exec_ctx
         self.plugin_id = manifest.id
@@ -38,6 +39,8 @@ class PluginContext(Mapping):
         self.workflow_id = _text_or_none(getattr(executor, "workflow_id", None))
         self.execution_id = _text_or_none(getattr(executor, "execution_id", None))
         self.resume = resume
+        # A loop node's pass: {"index", "state"} (docs/plugin-api-2.md, "Loop nodes"); None elsewhere.
+        self.loop = loop
         self._tokens: dict[str, str] = {}
 
     def _as_dict(self) -> dict[str, Any]:

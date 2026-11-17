@@ -76,6 +76,15 @@ from app.services.node_execution import NodeExecutionContext, execute_node_handl
 from app.services.node_execution.extra_body import resolve_extra_body
 from app.services.node_execution.llm_batch_input import normalize_batch_user_messages
 from app.services.page_params import PAGE_CONTEXT_NAME, page_params_from_inputs
+from app.services.plugin_loops import (
+    body_handle,
+    done_handle,
+    end_open_loops,
+    is_loop_node,
+    mark_plugin_loops,
+    output_is_done,
+    state_is_open,
+)
 from app.services.timezone_utils import get_configured_timezone, normalize_datetime_to_timezone
 from app.services.trigger_inputs import receives_initial_inputs
 from app.services.websocket_utils import (
@@ -2065,6 +2074,7 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
         file_scope: RunFileScope | None = None,
     ) -> None:
         self.nodes = {node["id"]: node for node in nodes}
+        mark_plugin_loops(self.nodes)
         self._node_pool = node_pool or _SHARED_EXECUTOR
         self.agent_progress_queue = agent_progress_queue
         self.edges = edges
@@ -2404,10 +2414,12 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
 
     def check_cancelled(self) -> None:
         if self._deadline is not None and time.monotonic() > self._deadline:
+            end_open_loops(self)
             raise WorkflowTimeoutError(
                 f"Workflow timed out after {int(self.timeout_seconds or 0)} seconds"
             )
         if self.cancel_event is not None and self.cancel_event.is_set():
+            end_open_loops(self)
             raise WorkflowCancelledError("Workflow execution cancelled")
 
     def _terminate_subprocess(self, process: Any) -> None:
@@ -2594,7 +2606,7 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
                 continue
             if (
                 edge["source"] == edge["target"]
-                and target_node.get("type") == "loop"
+                and is_loop_node(target_node)
                 and edge.get("targetHandle") == "loop"
             ):
                 # Some canvas workflows contain a visual loop-handle self-edge in
@@ -2714,7 +2726,7 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
             target_node = self.nodes.get(target, {})
             if (
                 edge.get("targetHandle") == "loop"
-                and target_node.get("type") == "loop"
+                and is_loop_node(target_node)
                 and self._edge_matches_source_handle(edge, handle_id)
             ):
                 targets.add(target)
@@ -2758,7 +2770,7 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
     def get_incoming_edge_count_for_execution(self, node_id: str, edges: list[dict]) -> int:
         """Return the pending dependency count for a node under the active execution graph."""
         node = self.nodes.get(node_id, {})
-        if node.get("type") == "loop":
+        if is_loop_node(node):
             return sum(
                 1
                 for edge in edges
@@ -2821,10 +2833,7 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
                 if edge["source"] != current:
                     continue
                 target = edge["target"]
-                if (
-                    edge.get("targetHandle") == "loop"
-                    and self.nodes.get(target, {}).get("type") == "loop"
-                ):
+                if edge.get("targetHandle") == "loop" and is_loop_node(self.nodes.get(target, {})):
                     continue
                 if target not in reachable and target not in excluded:
                     queue.append(target)
@@ -2846,10 +2855,7 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
         for edge in self.edges:
             if edge["source"] == node_id:
                 target = edge["target"]
-                if (
-                    edge.get("targetHandle") == "loop"
-                    and self.nodes.get(target, {}).get("type") == "loop"
-                ):
+                if edge.get("targetHandle") == "loop" and is_loop_node(self.nodes.get(target, {})):
                     continue
                 if target in preserved or target in stopped:
                     continue
@@ -2886,7 +2892,8 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
         queue = [
             edge["target"]
             for edge in edges
-            if edge["source"] == loop_node_id and edge.get("sourceHandle") == "loop"
+            if edge["source"] == loop_node_id
+            and edge.get("sourceHandle") == body_handle(self.nodes.get(loop_node_id))
         ]
 
         while queue:
@@ -2930,7 +2937,7 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
         pending_count: dict[str, int],
     ) -> None:
         # Not across loop-back edges: that would un-skip a nested loop's body from its done.
-        loop_ids = {nid for nid, node in self.nodes.items() if node.get("type") == "loop"}
+        loop_ids = {nid for nid, node in self.nodes.items() if is_loop_node(node)}
         forward_edges = [
             e
             for e in active_edges
@@ -2951,7 +2958,7 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
     ) -> bool:
         """Reset loop state so the loop node can emit the next item or the final done output."""
         loop_state = self.loop_states.get(loop_node_id)
-        if not loop_state or loop_state["current_index"] >= loop_state["total"]:
+        if not loop_state or not state_is_open(loop_state):
             return False
 
         completed_nodes.discard(loop_node_id)
@@ -2961,7 +2968,7 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
         self.reset_nodes_for_execution(body_node_ids, active_edges, completed_nodes, pending_count)
         # A loop nested in this body starts over on the next item, not where it left off.
         for body_node_id in body_node_ids:
-            if self.nodes.get(body_node_id, {}).get("type") == "loop":
+            if is_loop_node(self.nodes.get(body_node_id, {})):
                 self.loop_states.pop(body_node_id, None)
         return True
 
@@ -3257,6 +3264,8 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
         allow_downstream_pending: list[Future] | None = None,
         allow_downstream_node_results: list[NodeResult] | None = None,
     ) -> ExecutionResult:
+        if status != "pending" and not allow_downstream_pending:
+            end_open_loops(self)
         combined = _order_node_results(
             list(node_results)
             + list(getattr(self, "retry_node_results", []))
@@ -7615,7 +7624,7 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
         pending_count: dict[str, int] = {}
         for node_id in active_nodes:
             node = self.nodes.get(node_id, {})
-            if node.get("type") == "loop":
+            if is_loop_node(node):
                 count = sum(
                     1
                     for e in active_edges
@@ -7685,12 +7694,14 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
             source_is_skipped = source_result is not None and source_result.status == "skipped"
             source_node = self.nodes.get(source_node_id, {})
             if (
-                source_node.get("type") == "loop"
+                is_loop_node(source_node)
                 and source_result is not None
-                and source_result.output.get("branch") == "done"
+                and output_is_done(source_node, source_result.output)
             ):
                 self.prepare_branch_targets_for_execution(
-                    start_node_ids=self.get_downstream_nodes(source_node_id, "done"),
+                    start_node_ids=self.get_downstream_nodes(
+                        source_node_id, done_handle(source_node)
+                    ),
                     active_edges=active_edges,
                     completed_nodes=completed_nodes,
                     pending_count=pending_count,
@@ -7707,7 +7718,7 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
                 target_handle = edge.get("targetHandle")
                 target_node = self.nodes.get(target, {})
 
-                if target_node.get("type") == "loop" and target_handle == "loop":
+                if is_loop_node(target_node) and target_handle == "loop":
                     if source_is_skipped:
                         continue
                     if self._source_handle_is_skipped(edge, skip_loop_source_handles):
@@ -7872,13 +7883,12 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
                                         skip_loop_edge_ids = set(
                                             res.metadata.get("skip_loop_edge_ids") or []
                                         )
-                                        if (
-                                            result_node.get("type") == "loop"
-                                            and res.output.get("branch") == "done"
+                                        if is_loop_node(result_node) and output_is_done(
+                                            result_node, res.output
                                         ):
                                             self.prepare_branch_targets_for_execution(
                                                 start_node_ids=self.get_downstream_nodes(
-                                                    nid, "done"
+                                                    nid, done_handle(result_node)
                                                 ),
                                                 active_edges=active_edges,
                                                 completed_nodes=completed_nodes,
@@ -7900,10 +7910,7 @@ class WorkflowExecutor(WorkflowBranchRoutingMixin):
                                             tgt = edge["target"]
                                             tgt_handle = edge.get("targetHandle")
                                             tgt_node = self.nodes.get(tgt, {})
-                                            if (
-                                                tgt_node.get("type") == "loop"
-                                                and tgt_handle == "loop"
-                                            ):
+                                            if is_loop_node(tgt_node) and tgt_handle == "loop":
                                                 if self._source_handle_is_skipped(
                                                     edge, skip_loop_source_handles
                                                 ):
@@ -8482,12 +8489,14 @@ def resume_workflow_execution(
         source_is_skipped = source_result is not None and source_result.status == "skipped"
         source_node = wf_executor.nodes.get(source_node_id, {})
         if (
-            source_node.get("type") == "loop"
+            is_loop_node(source_node)
             and source_result is not None
-            and source_result.output.get("branch") == "done"
+            and output_is_done(source_node, source_result.output)
         ):
             wf_executor.prepare_branch_targets_for_execution(
-                start_node_ids=wf_executor.get_downstream_nodes(source_node_id, "done"),
+                start_node_ids=wf_executor.get_downstream_nodes(
+                    source_node_id, done_handle(source_node)
+                ),
                 active_edges=active_edges,
                 completed_nodes=completed_nodes,
                 pending_count=pending_count,
@@ -8504,7 +8513,7 @@ def resume_workflow_execution(
             target_handle = edge.get("targetHandle")
             target_node = wf_executor.nodes.get(target, {})
 
-            if target_node.get("type") == "loop" and target_handle == "loop":
+            if is_loop_node(target_node) and target_handle == "loop":
                 if source_is_skipped:
                     continue
                 if wf_executor._source_handle_is_skipped(edge, skip_loop_source_handles):
@@ -8654,13 +8663,12 @@ def resume_workflow_execution(
                                     skip_loop_edge_ids = set(
                                         res.metadata.get("skip_loop_edge_ids") or []
                                     )
-                                    if (
-                                        result_node.get("type") == "loop"
-                                        and res.output.get("branch") == "done"
+                                    if is_loop_node(result_node) and output_is_done(
+                                        result_node, res.output
                                     ):
                                         wf_executor.prepare_branch_targets_for_execution(
                                             start_node_ids=wf_executor.get_downstream_nodes(
-                                                nid, "done"
+                                                nid, done_handle(result_node)
                                             ),
                                             active_edges=active_edges,
                                             completed_nodes=completed_nodes,
@@ -8678,7 +8686,7 @@ def resume_workflow_execution(
                                         tgt = edge["target"]
                                         tgt_handle = edge.get("targetHandle")
                                         tgt_node = wf_executor.nodes.get(tgt, {})
-                                        if tgt_node.get("type") == "loop" and tgt_handle == "loop":
+                                        if is_loop_node(tgt_node) and tgt_handle == "loop":
                                             if wf_executor._source_handle_is_skipped(
                                                 edge, skip_loop_source_handles
                                             ):
@@ -8973,12 +8981,14 @@ def execute_llm_batch_notification_branch(
         source_is_skipped = source_result is not None and source_result.status == "skipped"
         source_node = wf_executor.nodes.get(source_id, {})
         if (
-            source_node.get("type") == "loop"
+            is_loop_node(source_node)
             and source_result is not None
-            and source_result.output.get("branch") == "done"
+            and output_is_done(source_node, source_result.output)
         ):
             wf_executor.prepare_branch_targets_for_execution(
-                start_node_ids=wf_executor.get_downstream_nodes(source_id, "done"),
+                start_node_ids=wf_executor.get_downstream_nodes(
+                    source_id, done_handle(source_node)
+                ),
                 active_edges=branch_edges,
                 completed_nodes=completed_nodes,
                 pending_count=pending_count,
@@ -8999,7 +9009,7 @@ def execute_llm_batch_notification_branch(
             target = edge["target"]
             target_handle = edge.get("targetHandle")
             target_node = wf_executor.nodes.get(target, {})
-            if target_node.get("type") == "loop" and target_handle == "loop":
+            if is_loop_node(target_node) and target_handle == "loop":
                 if source_is_skipped:
                     continue
                 if wf_executor._source_handle_is_skipped(edge, skip_loop_source_handles):
@@ -9201,12 +9211,14 @@ def execute_hitl_notification_branch(
         source_is_skipped = source_result is not None and source_result.status == "skipped"
         source_node = wf_executor.nodes.get(source_node_id, {})
         if (
-            source_node.get("type") == "loop"
+            is_loop_node(source_node)
             and source_result is not None
-            and source_result.output.get("branch") == "done"
+            and output_is_done(source_node, source_result.output)
         ):
             wf_executor.prepare_branch_targets_for_execution(
-                start_node_ids=wf_executor.get_downstream_nodes(source_node_id, "done"),
+                start_node_ids=wf_executor.get_downstream_nodes(
+                    source_node_id, done_handle(source_node)
+                ),
                 active_edges=active_edges,
                 completed_nodes=completed_nodes,
                 pending_count=pending_count,
@@ -9228,7 +9240,7 @@ def execute_hitl_notification_branch(
             target_handle = edge.get("targetHandle")
             target_node = wf_executor.nodes.get(target, {})
 
-            if target_node.get("type") == "loop" and target_handle == "loop":
+            if is_loop_node(target_node) and target_handle == "loop":
                 if source_is_skipped:
                     continue
                 if wf_executor._source_handle_is_skipped(edge, skip_loop_source_handles):
@@ -9577,7 +9589,7 @@ def _execute_workflow_streaming_impl(
     pending_count: dict[str, int] = {}
     for node_id in active_nodes:
         node = wf_executor.nodes.get(node_id, {})
-        if node.get("type") == "loop":
+        if is_loop_node(node):
             count = sum(
                 1
                 for e in active_edges
@@ -9675,12 +9687,14 @@ def _execute_workflow_streaming_impl(
         source_is_skipped = source_result is not None and source_result.status == "skipped"
         source_node = wf_executor.nodes.get(source_node_id, {})
         if (
-            source_node.get("type") == "loop"
+            is_loop_node(source_node)
             and source_result is not None
-            and source_result.output.get("branch") == "done"
+            and output_is_done(source_node, source_result.output)
         ):
             wf_executor.prepare_branch_targets_for_execution(
-                start_node_ids=wf_executor.get_downstream_nodes(source_node_id, "done"),
+                start_node_ids=wf_executor.get_downstream_nodes(
+                    source_node_id, done_handle(source_node)
+                ),
                 active_edges=active_edges,
                 completed_nodes=completed_nodes,
                 pending_count=pending_count,
@@ -9701,7 +9715,7 @@ def _execute_workflow_streaming_impl(
             target_handle = edge.get("targetHandle")
             target_node = wf_executor.nodes.get(target, {})
 
-            if target_node.get("type") == "loop" and target_handle == "loop":
+            if is_loop_node(target_node) and target_handle == "loop":
                 if source_is_skipped:
                     continue
                 if hasattr(

@@ -124,11 +124,12 @@ def _api2_node_keys(manifest: PluginManifest, node: PluginNodeDef) -> dict:
         "group": node.group,
         "color": manifest.node_color(node),
         "subtitle": node.subtitle,
-        "exits": node.exits,
+        "exits": node.listed_exits(),
         "exits_from": node.exits_from,
         "inputs": node.inputs,
         "sample": node.sample,
         "source": node.source,
+        "loop": node.loop,
     }
 
 

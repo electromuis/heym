@@ -8,6 +8,7 @@ request and a ``pending`` ``ExecutionHistory`` row, so cancelling means closing 
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import uuid
 from datetime import datetime, timezone
@@ -75,9 +76,13 @@ async def cancel_pending_review_execution(
             PluginWait.status == "pending",
         )
         .values(status=CANCELLED_STATUS, resolved_at=now)
+        # A plugin loop that was open when the run paused gets its loop_end from this snapshot.
+        .returning(PluginWait.execution_snapshot)
     )
+    paused_snapshots = list(wait_result.scalars().all())
+    wait_closed = max(wait_result.rowcount or 0, len(paused_snapshots))
     closed = (
-        (hitl_result.rowcount or 0) + (codex_result.rowcount or 0) + (wait_result.rowcount or 0)
+        (hitl_result.rowcount or 0) + (codex_result.rowcount or 0) + wait_closed
     )
     if closed == 0:
         return False
@@ -98,6 +103,13 @@ async def cancel_pending_review_execution(
         history.node_results = _cancel_pending_node_results(history.node_results)
 
     await db.commit()
+
+    if paused_snapshots:
+        from app.services.plugin_loops import end_loops_in_snapshot
+
+        for snapshot in paused_snapshots:
+            if isinstance(snapshot, dict):
+                await asyncio.to_thread(end_loops_in_snapshot, snapshot, execution_id)
 
     # A board card chain parked on this review would otherwise wait forever.
     from app.services.board_run_service import resume_card_chain
