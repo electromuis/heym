@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+import time
+from importlib import import_module
+
 from app.models.plugin_schemas import PluginManifest, PluginNodeDef
-from app.services import plugin_context, plugin_credentials, plugin_loader, plugin_store
+from app.services import (
+    plugin_context,
+    plugin_credentials,
+    plugin_loader,
+    plugin_store,
+    plugin_waits,
+)
 from app.services.node_execution.base import NodeExecutionContext
 
 
@@ -67,14 +76,48 @@ def execute(ctx: NodeExecutionContext) -> object:
     return result if isinstance(result, dict) else {"value": result}
 
 
+def _take_resume(ctx: NodeExecutionContext) -> dict | None:
+    """The body that resumed this node after a wait, taken once so a later pass sees None."""
+    executor = ctx.executor
+    resume_context = getattr(executor, "hitl_resume_context", None)
+    if not isinstance(resume_context, dict):
+        return None
+    with executor.lock:
+        resume = resume_context.pop(ctx.node_id, None)
+    return resume if isinstance(resume, dict) else None
+
+
+def _waiting_result(
+    ctx: NodeExecutionContext,
+    manifest: PluginManifest,
+    node_def: PluginNodeDef,
+    config: dict,
+    request: plugin_waits.PluginWaitRequested,
+) -> object:
+    if request.timeout is not None and "timedOut" not in node_def.exit_keys(config):
+        raise ValueError(
+            f"Plugin node {node_def.key} waits with a timeout but declares no timedOut exit"
+        )
+    node_result_cls = import_module("app.services.workflow_executor").NodeResult
+    return node_result_cls(
+        node_id=ctx.node_id,
+        node_label=ctx.node_label,
+        node_type=ctx.node_type,
+        status="pending",
+        output=plugin_waits.pending_output(request),
+        execution_time_ms=(time.time() - ctx.start_time) * 1000,
+        metadata=plugin_waits.pending_metadata(manifest.id, request),
+    )
+
+
 def _execute_api2(
     ctx: NodeExecutionContext, manifest: PluginManifest, node_def: PluginNodeDef
-) -> dict:
-    """An API 2 action: full config resolution, the `ctx` object, named inputs and exits."""
+) -> object:
+    """An API 2 action: full config resolution, the `ctx` object, named inputs, exits and waits."""
     raw_config = ctx.node_data.get("config", {}) or {}
     secrets: list[str] = []
     config = plugin_context.resolve_config(ctx, node_def.fields, raw_config, manifest.id, secrets)
-    plugin_ctx = plugin_context.PluginContext(ctx, manifest, node_def)
+    plugin_ctx = plugin_context.PluginContext(ctx, manifest, node_def, resume=_take_resume(ctx))
     try:
         result = plugin_loader.call_handler(
             manifest.id,
@@ -83,6 +126,8 @@ def _execute_api2(
             {"inputs": ctx.inputs, "config": config, "ctx": plugin_ctx},
             optional_kwargs={"inputs_by_key": plugin_context.inputs_by_key(ctx, node_def)},
         )
+    except plugin_waits.PluginWaitRequested as request:
+        return _waiting_result(ctx, manifest, node_def, config, request)
     except plugin_loader.PluginRuntimeError as exc:
         if not secrets:
             raise

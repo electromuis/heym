@@ -231,6 +231,22 @@ async def persist_pending_hitl_execution(
     history_entry: ExecutionHistory | None = None,
     history_entry_id: uuid.UUID | None = None,
 ) -> tuple[ExecutionHistory, HITLRequest]:
+    from app.services import plugin_waits
+
+    # Every call site that isn't Codex lands here, so a plugin wait is routed from one place.
+    if plugin_waits.is_plugin_wait(execution_result):
+        return await plugin_waits.persist_pending_plugin_wait(  # type: ignore[return-value]
+            db=db,
+            workflow=workflow,
+            enriched_inputs=enriched_inputs,
+            execution_result=execution_result,
+            trigger_source=trigger_source,
+            credentials_owner_id=credentials_owner_id,
+            trace_user_id=trace_user_id,
+            public_base_url=public_base_url,
+            history_entry=history_entry,
+            history_entry_id=history_entry_id,
+        )
     if execution_result.status != "pending":
         raise ValueError("persist_pending_hitl_execution requires a pending execution result")
     if not execution_result.pending_review or not execution_result.resume_snapshot:

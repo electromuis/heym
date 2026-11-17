@@ -1,6 +1,6 @@
 """Cancel executions that are parked on a human review instead of running on a worker.
 
-A run waiting on a HITL review or a Codex follow-up question owns no worker: its
+A run waiting on a HITL review, a Codex follow-up question or a plugin's ``ctx.wait`` owns no worker: its
 process has already returned, so there is no in-memory cancellation handle and no
 ``ActiveWorkflowExecution`` row to flag. The only durable state is the pending review
 request and a ``pending`` ``ExecutionHistory`` row, so cancelling means closing both.
@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import CodexFollowupRequest, ExecutionHistory, HITLRequest
+from app.db.models import CodexFollowupRequest, ExecutionHistory, HITLRequest, PluginWait
 
 CANCELLED_STATUS = "cancelled"
 CANCELLED_OUTPUT: dict[str, str] = {"error": "Execution was cancelled"}
@@ -67,7 +67,19 @@ async def cancel_pending_review_execution(
         )
         .values(status=CANCELLED_STATUS)
     )
-    if (hitl_result.rowcount or 0) + (codex_result.rowcount or 0) == 0:
+    wait_result = await db.execute(
+        update(PluginWait)
+        .where(
+            PluginWait.workflow_id == workflow_id,
+            PluginWait.execution_history_id == execution_id,
+            PluginWait.status == "pending",
+        )
+        .values(status=CANCELLED_STATUS, resolved_at=now)
+    )
+    closed = (
+        (hitl_result.rowcount or 0) + (codex_result.rowcount or 0) + (wait_result.rowcount or 0)
+    )
+    if closed == 0:
         return False
 
     history = (

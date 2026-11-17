@@ -1591,6 +1591,50 @@ class CodexFollowupRequest(Base):
     )
 
 
+class PluginWait(Base):
+    """A run paused by a Plugin API 2 node's ``ctx.wait`` (app/services/plugin_waits.py)."""
+
+    __tablename__ = "plugin_waits"
+    __table_args__ = (
+        # One wait at a time per package and key; ended waits keep their rows.
+        Index(
+            "uq_plugin_waits_pending_key",
+            "plugin_id",
+            "wait_key",
+            unique=True,
+            postgresql_where=literal_column("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plugin_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    wait_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    workflow_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    execution_history_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("execution_history.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    node_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    node_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    execution_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    resume_body: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    resume_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class OAuthClient(Base):
     __tablename__ = "oauth_clients"
 

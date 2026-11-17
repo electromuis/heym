@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from pathlib import Path
 from typing import Any
@@ -13,9 +14,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_current_user_optional
 from app.config import settings
-from app.db.models import CredentialType, Plugin, User
+from app.db.models import CredentialType, Plugin, PluginWait, User, Workflow
 from app.db.session import get_db
 from app.models.plugin_schemas import (
     PluginCredentialTypeDef,
@@ -26,7 +27,13 @@ from app.models.plugin_schemas import (
     PluginSummary,
     walk_fields,
 )
-from app.services import plugin_credentials, plugin_loader, plugin_store, plugin_triggers
+from app.services import (
+    plugin_credentials,
+    plugin_loader,
+    plugin_store,
+    plugin_triggers,
+    plugin_waits,
+)
 from app.services.encryption import decrypt_config
 from app.services.plugin_store import PluginInstallError
 
@@ -410,3 +417,52 @@ async def receive_plugin_hook(
     if started == 0:
         return Response(status_code=204)
     return JSONResponse(status_code=202, content={"started": started})
+
+
+WAIT_TOKEN_HEADER = "X-Heym-Wait-Token"
+
+
+@router.post("/{plugin_id}/waits/{key}", response_model=None)
+async def resume_plugin_wait(
+    plugin_id: str,
+    key: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
+) -> Response:
+    """Resume a run paused by `ctx.wait(key)`: the JSON object body is `ctx.resume` when the node runs again."""
+    require_plugins_enabled()
+    wait = await plugin_waits.find_wait(db, plugin_id, key)
+    if wait is None:
+        raise HTTPException(status_code=404, detail="Nothing waits on that key")
+    if not await _may_resume(db, wait, request.headers.get(WAIT_TOKEN_HEADER), current_user):
+        raise HTTPException(status_code=401, detail="Not allowed")
+    if wait.status != "pending":
+        raise HTTPException(status_code=409, detail="The wait already ended")
+    raw = await request.body()
+    if len(raw) > plugin_triggers.MAX_HOOK_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Request too large")
+    try:
+        body = json.loads(raw) if raw.strip() else {}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="The body must be JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="The body must be a JSON object")
+    if not await plugin_waits.claim_wait(db, wait.id, body=body, status="resumed"):
+        raise HTTPException(status_code=409, detail="The wait already ended")
+    await db.commit()
+    plugin_waits.resume_in_background(wait.id)
+    return Response(status_code=202)
+
+
+async def _may_resume(
+    db: AsyncSession, wait: PluginWait, token: str | None, user: User | None
+) -> bool:
+    from app.services.workflow_access import user_has_workflow_access
+
+    if plugin_waits.token_matches(wait, token):
+        return True
+    if user is None:
+        return False
+    workflow = await db.get(Workflow, wait.workflow_id)
+    return workflow is not None and await user_has_workflow_access(db, workflow, user.id)

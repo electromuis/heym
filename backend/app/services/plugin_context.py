@@ -38,6 +38,7 @@ class PluginContext(Mapping):
         self.workflow_id = _text_or_none(getattr(executor, "workflow_id", None))
         self.execution_id = _text_or_none(getattr(executor, "execution_id", None))
         self.resume = resume
+        self._tokens: dict[str, str] = {}
 
     def _as_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +60,31 @@ class PluginContext(Mapping):
     def log(self, text: str) -> None:
         """A line in Heym's log, tagged with the plugin and the node."""
         logger.info("plugin %s node %s: %s", self.plugin_id, self.node_label, text)
+
+    def wait_token(self, key: str) -> str:
+        """The token that may resume a wait on `key`, minted once per key; only its hash is stored."""
+        from app.services import plugin_waits
+
+        key = plugin_waits.check_key(key)
+        if key not in self._tokens:
+            self._tokens[key] = plugin_waits.new_token()
+        return self._tokens[key]
+
+    def wait(self, key: str, timeout: float | None = None) -> None:
+        """Pause the run until `POST /api/plugins/{id}/waits/{key}` or the timeout; never returns."""
+        from app.services import plugin_waits
+
+        key = plugin_waits.check_key(key)
+        if timeout is not None and (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0
+        ):
+            raise ValueError("ctx.wait: timeout must be a positive number of seconds")
+        if plugin_waits.key_is_waiting(self.plugin_id, key):
+            raise ValueError(f"ctx.wait: a run already waits on the key {key!r}")
+        token = self._tokens.get(key)
+        raise plugin_waits.PluginWaitRequested(
+            key, timeout, plugin_waits.hash_token(token) if token else None
+        )
 
     def check(self, condition: str) -> bool:
         """Evaluate a Condition-language text on the node's inputs; raises with its error."""

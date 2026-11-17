@@ -271,14 +271,24 @@ def run(inputs, config, ctx):
 ```
 
 - `ctx.wait` pauses the run like a review request does: the run's status is "pending", it is in the run history, and it
-  survives a restart.
-- `POST /api/plugins/{pluginId}/waits/{key}` resumes it. It takes the token from `X-Heym-Wait-Token` or a signed-in user who may run
-  the workflow. The JSON body is `ctx.resume` when the node runs again; its `exit` picks the exit. The answer is `202`, or `404` when
-  nothing waits on that key, or `409` when the wait already ended.
-- `timeout` in seconds: when it passes, the node runs again with `ctx.resume = {"exit": "timedOut"}`. A node that waits with a timeout
-  must declare a `timedOut` exit.
-- A key is one wait at a time per package. Waiting on a key that already waits fails the node. Tokens are stored hashed.
+  survives a restart. While it waits, the node's output is `{"status": "waiting", "key": ..., "expiresAt": ...}`.
+- When the run resumes, the handler is called again from the start, with the same inputs and config and `ctx.resume` set. Work done
+  before `ctx.wait` is done again unless the handler checks `ctx.resume` first, as above. `ctx.resume` is set for that one call only.
+- `ctx.wait` raises an exception that doesn't derive from `Exception`, so a handler's `except Exception:` doesn't swallow it.
+- `POST /api/plugins/{pluginId}/waits/{key}` resumes it. It takes the token from `X-Heym-Wait-Token` or a signed-in user who may open
+  the workflow. The body must be a JSON object (empty means `{}`, at most 1 MB). It becomes `ctx.resume` when the node runs again, and
+  its `exit` picks the exit. The answer is `202` once the run is resuming (the sender doesn't wait for it), `404` when nothing ever
+  waited on that key, `401` without a valid token or user, `409` when the wait already ended, or `422` for a body that isn't a JSON
+  object.
+- `timeout` in seconds: when it passes, the node runs again with `ctx.resume = {"exit": "timedOut"}`. Timeouts are checked every 30
+  seconds, so one may end up to 30 seconds late. A node that waits with a timeout must declare a `timedOut` exit, or it fails.
+  Without a timeout the run waits until it is resumed or stopped.
+- A key is one wait at a time per package. Waiting on a key that already waits fails the node. Only the token's hash is stored; a
+  wait without a `ctx.wait_token` can only be resumed by a signed-in user.
 - Stopping the run ends the wait.
+- Inside an Execute block's sub-workflow a wait is refused, as a review request is.
+- Stored in the table `plugin_waits` (`app/services/plugin_waits.py`); a resumed run is written to its history row as a resumed
+  review is.
 
 ## Worked example: a Rules block
 

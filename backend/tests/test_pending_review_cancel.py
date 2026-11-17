@@ -37,7 +37,12 @@ class CancelPendingReviewExecutionTests(unittest.IsolatedAsyncioTestCase):
         history = _make_history()
         db = AsyncMock()
         db.execute = AsyncMock(
-            side_effect=[_update_result(1), _update_result(0), _scalar_result(history)]
+            side_effect=[
+                _update_result(1),
+                _update_result(0),
+                _update_result(0),
+                _scalar_result(history),
+            ]
         )
 
         with patch("app.services.board_run_service.resume_card_chain", AsyncMock()) as resume:
@@ -58,7 +63,32 @@ class CancelPendingReviewExecutionTests(unittest.IsolatedAsyncioTestCase):
         history = _make_history()
         db = AsyncMock()
         db.execute = AsyncMock(
-            side_effect=[_update_result(0), _update_result(1), _scalar_result(history)]
+            side_effect=[
+                _update_result(0),
+                _update_result(1),
+                _update_result(0),
+                _scalar_result(history),
+            ]
+        )
+
+        with patch("app.services.board_run_service.resume_card_chain", AsyncMock()):
+            cancelled = await cancel_pending_review_execution(
+                db, workflow_id=uuid.uuid4(), execution_id=uuid.uuid4()
+            )
+
+        self.assertTrue(cancelled)
+        self.assertEqual(history.status, "cancelled")
+
+    async def test_cancels_a_pending_plugin_wait(self) -> None:
+        history = _make_history()
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                _update_result(0),
+                _update_result(0),
+                _update_result(1),
+                _scalar_result(history),
+            ]
         )
 
         with patch("app.services.board_run_service.resume_card_chain", AsyncMock()):
@@ -71,7 +101,7 @@ class CancelPendingReviewExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_returns_false_and_touches_nothing_without_pending_review(self) -> None:
         db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[_update_result(0), _update_result(0)])
+        db.execute = AsyncMock(side_effect=[_update_result(0)] * 3)
 
         with patch("app.services.board_run_service.resume_card_chain", AsyncMock()) as resume:
             cancelled = await cancel_pending_review_execution(
@@ -79,7 +109,7 @@ class CancelPendingReviewExecutionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertFalse(cancelled)
-        self.assertEqual(db.execute.await_count, 2)
+        self.assertEqual(db.execute.await_count, 3)
         db.commit.assert_not_awaited()
         resume.assert_not_awaited()
 
@@ -87,7 +117,12 @@ class CancelPendingReviewExecutionTests(unittest.IsolatedAsyncioTestCase):
         history = _make_history(status="success")
         db = AsyncMock()
         db.execute = AsyncMock(
-            side_effect=[_update_result(1), _update_result(0), _scalar_result(history)]
+            side_effect=[
+                _update_result(1),
+                _update_result(0),
+                _update_result(0),
+                _scalar_result(history),
+            ]
         )
 
         with patch("app.services.board_run_service.resume_card_chain", AsyncMock()):
