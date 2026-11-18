@@ -8,6 +8,7 @@ import {
   Loader2,
   Pin,
   RefreshCw,
+  Repeat,
   Sparkles,
 } from "lucide-vue-next";
 
@@ -143,6 +144,8 @@ const isPluginLoop = computed(
 onMounted(() => {
   if (props.type === "plugin") void loadPluginCatalog();
 });
+// A loop node wears the Loop block's colour, so a loop reads as one on the canvas.
+const nodeColor = computed(() => (isPluginLoop.value ? nodeColorMap.loop : nodeColorMap[props.type]));
 const hasOutput = computed(() => {
   if (isToolNode.value) return false;
   if (isPluginLoop.value) return false;
@@ -372,8 +375,8 @@ const hasThrowErrorWarning = computed(() => {
   <div
     :style="{
       minHeight: nodeHeight || '60px',
-      '--tw-ring-color': selected && !isRunning && !isSuccess && !isError ? `hsl(var(--${nodeColorMap[type]}))` : undefined,
-      borderColor: !isInactive && !isRunning ? `hsl(var(--${nodeColorMap[type]}) / 0.6)` : undefined,
+      '--tw-ring-color': selected && !isRunning && !isSuccess && !isError ? `hsl(var(--${nodeColor}))` : undefined,
+      borderColor: !isInactive && !isRunning ? `hsl(var(--${nodeColor}) / 0.6)` : undefined,
       backgroundColor: !isInactive ? `hsl(var(--card))` : undefined
     }"
     :class="cn(
@@ -395,7 +398,7 @@ const hasThrowErrorWarning = computed(() => {
       v-if="!isInactive"
       class="node-accent absolute top-0 left-0 right-0 h-[3px]"
       :style="{
-        backgroundColor: `hsl(var(--${nodeColorMap[type]}))`
+        backgroundColor: `hsl(var(--${nodeColor}))`
       }"
     />
     <div
@@ -496,7 +499,7 @@ const hasThrowErrorWarning = computed(() => {
         )
         "
         :style="!isInactive ? {
-          backgroundColor: `hsl(var(--${nodeColorMap[type]}) / 0.12)`,
+          backgroundColor: `hsl(var(--${nodeColor}) / 0.12)`,
         } : undefined"
       >
         <Loader2
@@ -508,7 +511,13 @@ const hasThrowErrorWarning = computed(() => {
           :plugin-id="data.pluginId"
           :node-key="data.pluginNodeKey"
           size-class="w-4.5 h-4.5"
-        />
+          :class="isPluginLoop && !isInactive && 'text-node-loop'"
+        >
+          <Repeat
+            v-if="isPluginLoop"
+            :class="cn('w-4.5 h-4.5', isInactive ? 'text-muted-foreground/70' : 'text-node-loop')"
+          />
+        </PluginIcon>
         <component
           :is="Icon"
           v-else

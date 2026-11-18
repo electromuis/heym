@@ -58,10 +58,15 @@ watch(() => [props.pluginId, props.nodeKey], load, { immediate: true });
   />
   <!-- eslint-enable vue/no-v-html -->
 
-  <Puzzle
+  <!-- The caller may bring its own fallback (a loop node shows Loop's icon). -->
+  <span
     v-else
-    :class="sizeClass"
-  />
+    class="inline-flex items-center justify-center"
+  >
+    <slot>
+      <Puzzle :class="sizeClass" />
+    </slot>
+  </span>
 </template>
 
 <style scoped>

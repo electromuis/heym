@@ -321,6 +321,8 @@ def loop_end(state, ctx):                                   # the run stopped be
 - The node has Loop's handles: the exits `step` (handle `exit-step`, the body hangs from it) and `done` (`exit-done`), and an
   input `loop` for the edge back from the end of the body. An edge into `loop` is a loop-back edge, as it is for the Loop block.
   Such a node declares no `exits`, `exitsFrom` or `inputs`; doing so is an install error.
+- On the canvas the node has the Loop block's colour, also on its icon (an SVG drawn in `currentColor` takes it). Without an
+  `icon` of its own it shows the Loop block's icon instead of the puzzle piece.
 - A pass is one call of the handler. `ctx.loop` is `{"index": <pass, from 0>, "state": <object>}`: `state` is what the previous
   pass returned under `state`, `{}` on the first pass. On later passes `inputs` also holds the output of the block whose edge came
   back into `loop`.
